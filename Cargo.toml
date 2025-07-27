@@ -1,7 +1,16 @@
 [package]
 name = "compress_comics"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+authors = ["Erik Vullings <erik.vullings@gmail.com>"]
+description = "High-performance comic book compression tool with WebP conversion supporting CBR, CBZ, and PDF formats"
+license = "MIT"
+repository = "https://github.com/erikvullings/compress_comics"
+homepage = "https://github.com/erikvullings/compress_comics"
+documentation = "https://docs.rs/compress_comics"
+keywords = ["comic", "compression", "webp", "cbr", "pdf"]
+categories = ["command-line-utilities", "multimedia::images"]
+readme = "README.md"
 
 [dependencies]
 rayon = "1.10"

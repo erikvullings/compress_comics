@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_suffix: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_suffix: ".exe"
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_suffix: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_suffix: ""
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf compress_comics-${{ matrix.target }}.tar.gz compress_comics${{ matrix.binary_suffix }}
+
+      - name: Package binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a compress_comics-${{ matrix.target }}.zip compress_comics${{ matrix.binary_suffix }}
+
+      - name: Upload artifact (Unix)
+        if: matrix.os != 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compress_comics-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/compress_comics-${{ matrix.target }}.tar.gz
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compress_comics-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/compress_comics-${{ matrix.target }}.zip
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/compress_comics-x86_64-unknown-linux-gnu/compress_comics-x86_64-unknown-linux-gnu.tar.gz
+            artifacts/compress_comics-x86_64-pc-windows-msvc/compress_comics-x86_64-pc-windows-msvc.zip
+            artifacts/compress_comics-x86_64-apple-darwin/compress_comics-x86_64-apple-darwin.tar.gz
+            artifacts/compress_comics-aarch64-apple-darwin/compress_comics-aarch64-apple-darwin.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
