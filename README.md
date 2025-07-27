@@ -16,42 +16,69 @@ A high-performance Rust application for compressing comic book files (CBR/CBZ/PD
 
 ## Installation
 
+### Download Pre-built Binaries (Recommended)
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/erikvullings/compress_comics/releases):
+
+- **Linux (x86_64)**: `compress_comics-x86_64-unknown-linux-gnu.tar.gz`
+- **Windows (x86_64)**: `compress_comics-x86_64-pc-windows-msvc.zip`  
+- **macOS (Intel)**: `compress_comics-x86_64-apple-darwin.tar.gz`
+- **macOS (Apple Silicon)**: `compress_comics-aarch64-apple-darwin.tar.gz`
+
+#### Linux/macOS Installation:
+```bash
+# Download and extract (replace URL with latest release)
+tar -xzf compress_comics-x86_64-unknown-linux-gnu.tar.gz
+chmod +x compress_comics
+sudo mv compress_comics /usr/local/bin/  # Optional: add to PATH
+```
+
+#### Windows Installation:
+1. Download the `.zip` file for Windows
+2. Extract `compress_comics.exe` 
+3. Place in a folder that's in your PATH or run directly
+
 ### From Source
 ```bash
-git clone <repository>
-cd compress_comics_rust
+git clone https://github.com/erikvullings/compress_comics.git
+cd compress_comics
 cargo build --release
 ```
 
 The compiled binary will be available at `target/release/compress_comics`
 
+### From crates.io
+```bash
+cargo install compress_comics
+```
+
 ## Usage
 
 ### Process a single file
 ```bash
-./compress_comics comic.cbz --quality 85
-./compress_comics comic.cbr --quality 85
-./compress_comics comic.pdf --quality 85
+compress_comics comic.cbz --quality 85
+compress_comics comic.cbr --quality 85
+compress_comics comic.pdf --quality 85
 ```
 
 ### Process all comic files in current directory (default behavior)
 ```bash
-./compress_comics
+compress_comics
 ```
 
 ### Process all comic files in a specific directory
 ```bash
-./compress_comics /path/to/comics/
+compress_comics /path/to/comics/
 ```
 
 ### Custom settings
 ```bash
-./compress_comics comics/ --quality 75 --target-height 1600
+compress_comics comics/ --quality 75 --target-height 1600
 ```
 
 ### Rename original files (convenient workflow)
 ```bash
-./compress_comics comics/ --rename-original --quality 85
+compress_comics comics/ --rename-original --quality 85
 # Result: Original files become *_original.ext, compressed files get clean names
 ```
 
