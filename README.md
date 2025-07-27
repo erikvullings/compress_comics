@@ -49,6 +49,12 @@ The compiled binary will be available at `target/release/compress_comics`
 ./compress_comics comics/ --quality 75 --target-height 1600
 ```
 
+### Rename original files (convenient workflow)
+```bash
+./compress_comics comics/ --rename-original --quality 85
+# Result: Original files become *_original.ext, compressed files get clean names
+```
+
 ## Options
 
 - `--quality` / `-q`: WebP quality (1-100, default: 90)
@@ -58,13 +64,21 @@ The compiled binary will be available at `target/release/compress_comics`
 
 - `--target-height` / `-H`: Target height for images in pixels (default: 1800)
 - `--max-dimension` / `-m`: Maximum dimension fallback (default: 1200)
+- `--rename-original` / `-r`: Rename original file to `<name>_original.<ext>` and give compressed file the original name
 
 ## Output
 
-The tool creates new files with the suffix ` optimized_webp_q{quality}.cbr`. For example:
+### Default Behavior
+The tool creates new files with the suffix ` optimized_webp_q{quality}.cbr`:
 - Input: `MyComic.cbz` → Output: `MyComic optimized_webp_q90.cbr`
 - Input: `MyComic.cbr` → Output: `MyComic optimized_webp_q90.cbr`
 - Input: `MyComic.pdf` → Output: `MyComic optimized_webp_q90.cbr`
+
+### With `--rename-original` Option
+When using `--rename-original`, the compressed file takes the original name:
+- `MyComic.cbz` → `MyComic_original.cbz` (backup) + `MyComic.cbr` (compressed)
+- `MyComic.cbr` → `MyComic_original.cbr` (backup) + `MyComic.cbr` (compressed)
+- `MyComic.pdf` → `MyComic_original.pdf` (backup) + `MyComic.cbr` (compressed)
 
 ## Performance Features
 
@@ -135,10 +149,23 @@ Original: 237.83 MB → Compressed: 85.05 MB (64.3% total savings)
 Original: 119.41 MB → Compressed: 28.29 MB (76.3% savings)
 ```
 
+### With `--rename-original` Option
+```
+📖 comic1.cbr: 76.4% savings (84 images processed, 0 skipped)
+📖 comic2.pdf: 81.1% savings (55 images processed, 0 skipped)
+
+Before: comic1.cbr (115.75 MB), comic2.pdf (125.21 MB)
+After:  comic1_original.cbr (backup), comic2_original.pdf (backup)
+        comic1.cbr (27.35 MB), comic2.cbr (23.71 MB)
+
+Total: 229.80 MB → 48.69 MB (78.8% savings)
+```
+
 ### Why These Results?
 - **PDF files often have the highest compression ratios** because they typically contain uncompressed or lightly compressed images
 - **CBR/CBZ files vary** depending on original compression - some modern files are already well-optimized
 - **WebP format** provides excellent quality-to-size ratio, especially for comic book artwork
+- **--rename-original** makes workflow seamless - no manual file management needed
 
 ## Technical Details
 

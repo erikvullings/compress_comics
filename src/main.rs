@@ -32,6 +32,10 @@ struct Args {
     /// Maximum dimension for fallback (default: 1200)
     #[arg(short, long, default_value = "1200")]
     max_dimension: u32,
+
+    /// Rename original file to <name>_original.<ext> and give compressed file the original name
+    #[arg(short, long)]
+    rename_original: bool,
 }
 
 #[derive(Debug)]
@@ -178,11 +182,42 @@ fn process_comic_file(
     let stats = process_images(&image_files, args, progress)?;
     progress.set_position(80);
 
-    let output_path = generate_output_path(&comic_file.path, args.quality);
-    create_cbr_archive(temp_dir.path(), &output_path, progress)?;
-    progress.set_position(100);
+    // Always create compressed file with temporary name first to avoid overwriting original
+    let temp_output_path = if args.rename_original {
+        let parent = comic_file.path.parent().unwrap_or_else(|| Path::new("."));
+        let stem = comic_file.path.file_stem().unwrap().to_string_lossy();
+        parent.join(format!("{}_temp_compressed.cbr", stem))
+    } else {
+        generate_output_path(&comic_file.path, args.quality, false)
+    };
+    
+    create_cbr_archive(temp_dir.path(), &temp_output_path, progress)?;
+    progress.set_position(90);
 
-    let compressed_size = fs::metadata(&output_path)?.len();
+    let compressed_size = fs::metadata(&temp_output_path)?.len();
+
+    // Handle renaming if requested
+    if args.rename_original {
+        let original_path = &comic_file.path;
+        let original_extension = original_path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("cbr");
+        
+        let parent = original_path.parent().unwrap_or_else(|| Path::new("."));
+        let stem = original_path.file_stem().unwrap().to_string_lossy();
+        let backup_path = parent.join(format!("{}_original.{}", stem, original_extension));
+        let final_compressed_path = parent.join(format!("{}.cbr", stem));
+        
+        // Rename original file to backup name
+        fs::rename(original_path, &backup_path)
+            .context("Failed to rename original file")?;
+            
+        // Rename compressed file to original name
+        fs::rename(&temp_output_path, &final_compressed_path)
+            .context("Failed to rename compressed file")?;
+    }
+    
+    progress.set_position(100);
 
     Ok(ProcessingStats {
         original_size,
@@ -623,10 +658,17 @@ fn create_cbr_archive(temp_dir: &Path, output_path: &Path, _progress: &ProgressB
     Ok(())
 }
 
-fn generate_output_path(input_path: &Path, quality: u8) -> PathBuf {
+fn generate_output_path(input_path: &Path, quality: u8, rename_original: bool) -> PathBuf {
     let parent = input_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = input_path.file_stem().unwrap().to_string_lossy();
-    parent.join(format!("{} optimized_webp_q{}.cbr", stem, quality))
+    
+    if rename_original {
+        // When renaming original, compressed file gets the original name (but as .cbr)
+        parent.join(format!("{}.cbr", stem))
+    } else {
+        // Traditional naming with suffix
+        parent.join(format!("{} optimized_webp_q{}.cbr", stem, quality))
+    }
 }
 
 fn print_summary(stats: &HashMap<PathBuf, ProcessingStats>) {
