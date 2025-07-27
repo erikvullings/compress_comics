@@ -1,16 +1,17 @@
 # Comic Compressor
 
-A high-performance Rust application for compressing comic book files (CBR/CBZ) with parallel processing. Converts images to WebP format for optimal file size reduction while maintaining visual quality.
+A high-performance Rust application for compressing comic book files (CBR/CBZ/PDF) with parallel processing. Converts images to WebP format for optimal file size reduction while maintaining visual quality.
 
 ## Features
 
 - ✅ **Cross-platform compatibility** - Works on Mac, Windows, and Linux
 - ✅ **Parallel processing** - Processes multiple files and images simultaneously
-- ✅ **Multiple format support** - Handles CBR (RAR) and CBZ (ZIP) files with automatic format detection
+- ✅ **Multiple format support** - Handles CBR (RAR), CBZ (ZIP), and PDF files with automatic format detection
+- ✅ **Advanced PDF support** - Direct image extraction from PDFs (JPEG, PNG, CMYK, Grayscale)
 - ✅ **Automatic folder processing** - Processes all comic files in a directory by default
 - ✅ **Progress visualization** - Docker-style layered progress display
 - ✅ **Smart compression** - Skips images that don't benefit from compression
-- ✅ **CBR output format** - Always outputs .cbr files regardless of compression method
+- ✅ **CBR output format** - Always outputs .cbr files regardless of input format
 - ✅ **Standalone binary** - No external dependencies required
 
 ## Installation
@@ -29,6 +30,8 @@ The compiled binary will be available at `target/release/compress_comics`
 ### Process a single file
 ```bash
 ./compress_comics comic.cbz --quality 85
+./compress_comics comic.cbr --quality 85
+./compress_comics comic.pdf --quality 85
 ```
 
 ### Process all comic files in current directory (default behavior)
@@ -59,8 +62,9 @@ The compiled binary will be available at `target/release/compress_comics`
 ## Output
 
 The tool creates new files with the suffix ` optimized_webp_q{quality}.cbr`. For example:
-- Input: `MyComic.cbz`
-- Output: `MyComic optimized_webp_q90.cbr`
+- Input: `MyComic.cbz` → Output: `MyComic optimized_webp_q90.cbr`
+- Input: `MyComic.cbr` → Output: `MyComic optimized_webp_q90.cbr`
+- Input: `MyComic.pdf` → Output: `MyComic optimized_webp_q90.cbr`
 
 ## Performance Features
 
@@ -114,20 +118,60 @@ After processing, the tool provides a detailed summary:
 💡 1 file(s) were already well-compressed and showed minimal improvement.
 ```
 
+## Real-World Results
+
+### CBR/CBZ Files
+```
+📖 Amber Blake - 01.cbr: 61.1% savings (104 images processed, 0 skipped)
+📖 Auschwitz - 01.cbr: 67.9% savings (84 images processed, 0 skipped)
+
+Original: 237.83 MB → Compressed: 85.05 MB (64.3% total savings)
+```
+
+### PDF Files
+```
+📖 Brocéliande - Tome 67.pdf: 76.3% savings (55 images processed, 0 skipped)
+
+Original: 119.41 MB → Compressed: 28.29 MB (76.3% savings)
+```
+
+### Why These Results?
+- **PDF files often have the highest compression ratios** because they typically contain uncompressed or lightly compressed images
+- **CBR/CBZ files vary** depending on original compression - some modern files are already well-optimized
+- **WebP format** provides excellent quality-to-size ratio, especially for comic book artwork
+
 ## Technical Details
 
 - **Language**: Rust (standalone binary, no runtime dependencies)
 - **Image Processing**: High-quality Lanczos3 resampling
 - **Compression**: WebP lossy compression with configurable quality
 - **Archive Format**: ZIP-based CBR files (universal comic reader compatibility)
-- **Extraction**: Native RAR support for CBR files, ZIP fallback for compatibility
+- **Extraction**: 
+  - **CBR files**: Native RAR support with ZIP fallback for compatibility
+  - **CBZ files**: Native ZIP extraction
+  - **PDF files**: Direct embedded image extraction (JPEG, PNG, CMYK, Grayscale)
 - **Threading**: Rayon for work-stealing parallelism
+
+## PDF Support Details
+
+The tool provides comprehensive PDF support for comic books:
+
+### ✅ Supported PDF Image Formats
+- **JPEG (DCTDecode)**: Direct extraction with no quality loss
+- **PNG/Compressed (FlateDecode)**: Decompression and reconstruction
+- **Raw RGB/Grayscale**: Uncompressed pixel data extraction
+- **CMYK Images**: Automatic conversion to RGB color space
+
+### ⚠️ Unsupported PDF Formats
+- **CCITT Fax compression**: Skipped with informative message
+- **Complex vector graphics**: Only embedded raster images are extracted
+- **Text-only PDFs**: No images to extract
 
 ## Limitations
 
-- PDF support is not yet implemented (placeholder exists)
 - Output uses ZIP compression for CBR files (not RAR compression, but maintains .cbr extension for compatibility)
 - WebP format may not be supported by very old comic readers
+- PDF vector graphics are not rasterized (only embedded images are extracted)
 
 ## Building for Distribution
 
