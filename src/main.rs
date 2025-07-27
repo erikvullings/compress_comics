@@ -205,7 +205,7 @@ fn extract_comic(comic_file: &ComicFile, temp_dir: &Path, _progress: &ProgressBa
             }
         }
         ComicType::Pdf => {
-            anyhow::bail!("PDF extraction not yet implemented in this Rust version");
+            extract_pdf_archive(&comic_file.path, temp_dir)?;
         }
     }
     Ok(())
@@ -258,6 +258,247 @@ fn extract_rar_archive(archive_path: &Path, temp_dir: &Path) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn extract_pdf_archive(pdf_path: &Path, temp_dir: &Path) -> Result<()> {
+    use lopdf::{Document, Object};
+    
+    // Load the PDF document
+    let doc = Document::load(pdf_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load PDF: {:?}", e))?;
+    
+    let mut image_counter = 1;
+    
+    // Iterate through all pages
+    let pages = doc.get_pages();
+    for (_, page_object_id) in pages {
+        // Get page object
+        if let Ok(page_object) = doc.get_object(page_object_id) {
+            if let Object::Dictionary(page_dict) = page_object {
+                extract_images_from_page(&doc, page_dict, temp_dir, &mut image_counter)?;
+            }
+        }
+    }
+    
+    if image_counter == 1 {
+        anyhow::bail!("No images found in PDF - this might not be a comic book PDF with embedded images");
+    }
+    
+    Ok(())
+}
+
+fn extract_images_from_page(
+    doc: &lopdf::Document, 
+    page_dict: &lopdf::Dictionary,
+    temp_dir: &Path,
+    image_counter: &mut usize
+) -> Result<()> {
+    use lopdf::Object;
+    
+    // Look for Resources -> XObject
+    if let Ok(Object::Dictionary(resources)) = page_dict.get(b"Resources") {
+        if let Ok(Object::Dictionary(xobject)) = resources.get(b"XObject") {
+            // Iterate through XObjects to find images
+            for (name, obj_ref) in xobject {
+                if let Object::Reference(ref_id) = obj_ref {
+                    if let Ok(Object::Stream(stream)) = doc.get_object(*ref_id) {
+                        if let Ok(Object::Name(subtype)) = stream.dict.get(b"Subtype") {
+                            if subtype == b"Image" {
+                                // Extract the image
+                                extract_image_from_stream(&stream, temp_dir, *image_counter, name)?;
+                                *image_counter += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+fn extract_image_from_stream(
+    stream: &lopdf::Stream,
+    temp_dir: &Path,
+    image_number: usize,
+    _name: &[u8]
+) -> Result<()> {
+    use lopdf::Object;
+    
+    // Get image properties
+    let width = stream.dict.get(b"Width")
+        .ok()
+        .and_then(|obj| obj.as_i64().ok())
+        .unwrap_or(0);
+    
+    let height = stream.dict.get(b"Height")
+        .ok()
+        .and_then(|obj| obj.as_i64().ok())
+        .unwrap_or(0);
+    
+    let bits_per_component = stream.dict.get(b"BitsPerComponent")
+        .ok()
+        .and_then(|obj| obj.as_i64().ok())
+        .unwrap_or(8) as u32;
+    
+    // Check the filter to determine image format
+    if let Ok(Object::Name(filter)) = stream.dict.get(b"Filter") {
+        match filter.as_slice() {
+            b"DCTDecode" => {
+                // JPEG - save directly
+                let output_path = temp_dir.join(format!("page_{:04}.jpg", image_number));
+                fs::write(&output_path, &stream.content)
+                    .map_err(|e| anyhow::anyhow!("Failed to save JPEG image: {:?}", e))?;
+                return Ok(());
+            }
+            b"FlateDecode" => {
+                // PNG or other compressed format - need to reconstruct
+                extract_flate_decoded_image(stream, temp_dir, image_number, width as u32, height as u32, bits_per_component)?;
+                return Ok(());
+            }
+            b"CCITTFaxDecode" => {
+                // TIFF/Fax format - skip for now
+                println!("Skipping CCITT Fax image {}x{} (not supported yet)", width, height);
+                return Ok(());
+            }
+            _ => {
+                println!("Skipping unsupported image format {}x{} (filter: {:?})", 
+                         width, height, filter);
+                return Ok(());
+            }
+        }
+    } else {
+        // No filter - raw image data
+        extract_raw_image(stream, temp_dir, image_number, width as u32, height as u32, bits_per_component)?;
+    }
+    
+    Ok(())
+}
+
+fn extract_flate_decoded_image(
+    stream: &lopdf::Stream,
+    temp_dir: &Path,
+    image_number: usize,
+    width: u32,
+    height: u32,
+    bits_per_component: u32,
+) -> Result<()> {
+    use lopdf::Object;
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+    
+    // Decompress the data
+    let mut decoder = ZlibDecoder::new(stream.content.as_slice());
+    let mut decompressed_data = Vec::new();
+    decoder.read_to_end(&mut decompressed_data)
+        .map_err(|e| anyhow::anyhow!("Failed to decompress image data: {:?}", e))?;
+    
+    // Get color space
+    let color_space = stream.dict.get(b"ColorSpace")
+        .ok()
+        .and_then(|obj| match obj {
+            Object::Name(name) => Some(name.as_slice()),
+            _ => None,
+        });
+    
+    // Create image based on color space and bit depth
+    let output_path = temp_dir.join(format!("page_{:04}.png", image_number));
+    
+    match (color_space.map(|cs| cs), bits_per_component) {
+        (Some(b"DeviceRGB"), 8) => {
+            // RGB image
+            let img = image::RgbImage::from_raw(width, height, decompressed_data)
+                .ok_or_else(|| anyhow::anyhow!("Failed to create RGB image from raw data"))?;
+            image::DynamicImage::ImageRgb8(img).save(&output_path)
+                .map_err(|e| anyhow::anyhow!("Failed to save PNG image: {:?}", e))?;
+        }
+        (Some(b"DeviceGray"), 8) => {
+            // Grayscale image
+            let img = image::GrayImage::from_raw(width, height, decompressed_data)
+                .ok_or_else(|| anyhow::anyhow!("Failed to create grayscale image from raw data"))?;
+            image::DynamicImage::ImageLuma8(img).save(&output_path)
+                .map_err(|e| anyhow::anyhow!("Failed to save PNG image: {:?}", e))?;
+        }
+        (Some(b"DeviceCMYK"), 8) => {
+            // CMYK - convert to RGB (simplified conversion)
+            if decompressed_data.len() == (width * height * 4) as usize {
+                let mut rgb_data = Vec::with_capacity((width * height * 3) as usize);
+                for chunk in decompressed_data.chunks(4) {
+                    let c = chunk[0] as f32 / 255.0;
+                    let m = chunk[1] as f32 / 255.0;
+                    let y = chunk[2] as f32 / 255.0;
+                    let k = chunk[3] as f32 / 255.0;
+                    
+                    // Simple CMYK to RGB conversion
+                    let r = ((1.0 - c) * (1.0 - k) * 255.0) as u8;
+                    let g = ((1.0 - m) * (1.0 - k) * 255.0) as u8;
+                    let b = ((1.0 - y) * (1.0 - k) * 255.0) as u8;
+                    
+                    rgb_data.extend_from_slice(&[r, g, b]);
+                }
+                
+                let img = image::RgbImage::from_raw(width, height, rgb_data)
+                    .ok_or_else(|| anyhow::anyhow!("Failed to create RGB image from CMYK data"))?;
+                image::DynamicImage::ImageRgb8(img).save(&output_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to save PNG image: {:?}", e))?;
+            } else {
+                return Err(anyhow::anyhow!("CMYK data size mismatch"));
+            }
+        }
+        _ => {
+            println!("Skipping unsupported color space/bit depth: {:?}/{}", 
+                     color_space.map(|cs| std::str::from_utf8(cs).unwrap_or("invalid")), 
+                     bits_per_component);
+            return Ok(());
+        }
+    }
+    
+    Ok(())
+}
+
+fn extract_raw_image(
+    stream: &lopdf::Stream,
+    temp_dir: &Path,
+    image_number: usize,
+    width: u32,
+    height: u32,
+    bits_per_component: u32,
+) -> Result<()> {
+    use lopdf::Object;
+    
+    // Get color space
+    let color_space = stream.dict.get(b"ColorSpace")
+        .ok()
+        .and_then(|obj| match obj {
+            Object::Name(name) => Some(name.as_slice()),
+            _ => None,
+        });
+    
+    let output_path = temp_dir.join(format!("page_{:04}.png", image_number));
+    
+    match (color_space.map(|cs| cs), bits_per_component) {
+        (Some(b"DeviceRGB"), 8) => {
+            let img = image::RgbImage::from_raw(width, height, stream.content.clone())
+                .ok_or_else(|| anyhow::anyhow!("Failed to create RGB image from raw data"))?;
+            image::DynamicImage::ImageRgb8(img).save(&output_path)
+                .map_err(|e| anyhow::anyhow!("Failed to save PNG image: {:?}", e))?;
+        }
+        (Some(b"DeviceGray"), 8) => {
+            let img = image::GrayImage::from_raw(width, height, stream.content.clone())
+                .ok_or_else(|| anyhow::anyhow!("Failed to create grayscale image from raw data"))?;
+            image::DynamicImage::ImageLuma8(img).save(&output_path)
+                .map_err(|e| anyhow::anyhow!("Failed to save PNG image: {:?}", e))?;
+        }
+        _ => {
+            println!("Skipping unsupported raw image format: {:?}/{}", 
+                     color_space.map(|cs| std::str::from_utf8(cs).unwrap_or("invalid")), 
+                     bits_per_component);
+            return Ok(());
+        }
+    }
+    
     Ok(())
 }
 
