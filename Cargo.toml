@@ -1,6 +1,6 @@
 [package]
 name = "compress_comics"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["Erik Vullings <erik.vullings@gmail.com>"]
 description = "High-performance comic book compression tool with WebP conversion supporting CBR, CBZ, and PDF formats"
