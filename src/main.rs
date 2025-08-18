@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossbeam_channel::{bounded, Receiver, Sender};
+use glob::glob;
 use image::ImageReader;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
@@ -36,6 +37,18 @@ struct Args {
     /// Rename original file to <name>_original.<ext> and give compressed file the original name
     #[arg(short, long)]
     rename_original: bool,
+
+    /// Glob pattern for file selection (e.g., "ABC*.cbr")
+    #[arg(short, long)]
+    glob_pattern: Option<String>,
+
+    /// Minimum compression savings required to keep compressed file (default: 5%)
+    #[arg(long, default_value = "5.0")]
+    min_savings: f64,
+
+    /// Enable verbose output with detailed warnings
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Debug)]
@@ -57,6 +70,8 @@ struct ProcessingStats {
     compressed_size: u64,
     images_processed: usize,
     images_skipped: usize,
+    compression_skipped: bool,
+    error_message: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -72,15 +87,29 @@ fn main() -> Result<()> {
         anyhow::bail!("Input path does not exist: {}", input_path.display());
     }
 
-    let comic_files = if input_path.is_file() {
+    let comic_files = if let Some(pattern) = &args.glob_pattern {
+        find_comic_files_by_glob(pattern)?
+    } else if input_path.is_file() {
         vec![detect_comic_file(&input_path)?]
     } else {
         find_comic_files(&input_path)?
     };
 
     if comic_files.is_empty() {
-        println!("No comic files found in the specified path.");
+        if args.glob_pattern.is_some() {
+            // Error message already printed in find_comic_files_by_glob
+        } else {
+            println!("No comic files found in the specified path.");
+        }
         return Ok(());
+    }
+
+    if args.verbose {
+        println!("📁 Found files:");
+        for file in &comic_files {
+            println!("   - {}", file.path.display());
+        }
+        println!();
     }
 
     println!("🚀 Found {} comic file(s) to process", comic_files.len());
@@ -95,7 +124,7 @@ fn main() -> Result<()> {
     overall_progress.set_style(
         ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({eta})")?
-            .progress_chars("#>-"),
+            .progress_chars("█▉▊▋▌▍▎▏ "),
     );
 
     let stats = Arc::new(Mutex::new(HashMap::new()));
@@ -103,22 +132,41 @@ fn main() -> Result<()> {
     comic_files.par_iter().for_each(|comic_file| {
         let file_progress = multi_progress.add(ProgressBar::new(100));
         let style_result = ProgressStyle::default_bar()
-            .template("  {msg} [{bar:30.green/yellow}] {percent}%")
+            .template("  📖 {msg} [{bar:30.green/yellow}] {percent}%")
             .unwrap()
             .progress_chars("█▉▊▋▌▍▎▏ ");
         file_progress.set_style(style_result);
         file_progress.set_message(format!(
-            "📖 {}",
+            "{}",
             comic_file.path.file_name().unwrap().to_string_lossy()
         ));
 
         match process_comic_file(comic_file, &args, &file_progress) {
             Ok(file_stats) => {
                 let mut stats_map = stats.lock().unwrap();
+                
+                if file_stats.compression_skipped {
+                    file_progress.finish_with_message("⏭️  Skipped - already well-compressed");
+                } else {
+                    file_progress.finish_with_message("✅ Compressed");
+                }
+                
                 stats_map.insert(comic_file.path.clone(), file_stats);
-                file_progress.finish_with_message("✅ Complete");
             }
             Err(e) => {
+                // Create error stats entry
+                let error_stats = ProcessingStats {
+                    original_size: fs::metadata(&comic_file.path).map(|m| m.len()).unwrap_or(0),
+                    compressed_size: 0,
+                    images_processed: 0,
+                    images_skipped: 0,
+                    compression_skipped: false,
+                    error_message: Some(e.to_string()),
+                };
+                
+                let mut stats_map = stats.lock().unwrap();
+                stats_map.insert(comic_file.path.clone(), error_stats);
+                
                 file_progress.finish_with_message(format!("❌ Failed: {}", e));
             }
         }
@@ -165,6 +213,53 @@ fn find_comic_files(dir: &Path) -> Result<Vec<ComicFile>> {
     Ok(comic_files)
 }
 
+fn find_comic_files_by_glob(pattern: &str) -> Result<Vec<ComicFile>> {
+    let mut comic_files = Vec::new();
+    
+    // Try the pattern as provided first
+    let patterns_to_try = vec![
+        pattern.to_string(),
+        // If pattern doesn't start with / or **, try making it recursive
+        if !pattern.starts_with('/') && !pattern.starts_with("**") {
+            format!("**/{}", pattern)
+        } else {
+            pattern.to_string()
+        }
+    ];
+    
+    for pattern_attempt in patterns_to_try {
+        for entry in glob(&pattern_attempt).context("Failed to read glob pattern")? {
+            match entry {
+                Ok(path) => {
+                    if path.is_file() {
+                        if let Ok(comic_file) = detect_comic_file(&path) {
+                            comic_files.push(comic_file);
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Silently skip glob pattern errors
+                }
+            }
+        }
+        
+        // If we found files with this pattern, don't try others
+        if !comic_files.is_empty() {
+            break;
+        }
+    }
+
+    if comic_files.is_empty() {
+        println!("⚠️  No comic files found matching pattern: '{}'", pattern);
+        println!("💡 Try patterns like:");
+        println!("   - \"**/*Killer*.cbr\" (recursive search)");
+        println!("   - \"/full/path/**/Killer*.cbr\" (absolute path)");
+        println!("   - \"**/De Killer*.cbr\" (your specific case)");
+    }
+
+    Ok(comic_files)
+}
+
 fn process_comic_file(
     comic_file: &ComicFile,
     args: &Args,
@@ -196,7 +291,34 @@ fn process_comic_file(
 
     let compressed_size = fs::metadata(&temp_output_path)?.len();
 
-    // Handle renaming if requested
+    // Calculate compression savings
+    let savings_percent = if original_size > 0 {
+        ((original_size as f64 - compressed_size as f64) / original_size as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    // Check if compression provides significant benefit
+    let compression_skipped = savings_percent < args.min_savings;
+    
+    if compression_skipped {
+        // Remove the compressed file and keep original
+        fs::remove_file(&temp_output_path)
+            .context("Failed to remove temporary compressed file")?;
+        
+        progress.set_position(100);
+        
+        return Ok(ProcessingStats {
+            original_size,
+            compressed_size: original_size, // No compression applied
+            images_processed: stats.0,
+            images_skipped: stats.1,
+            compression_skipped: true,
+            error_message: None,
+        });
+    }
+
+    // Handle renaming if requested and compression was beneficial
     if args.rename_original {
         let original_path = &comic_file.path;
         let original_extension = original_path.extension()
@@ -224,6 +346,8 @@ fn process_comic_file(
         compressed_size,
         images_processed: stats.0,
         images_skipped: stats.1,
+        compression_skipped: false,
+        error_message: None,
     })
 }
 
@@ -582,13 +706,27 @@ fn process_images(
 
             let current = *processed_clone.lock().unwrap() + *skipped_clone.lock().unwrap();
             let progress_percent = 30 + ((current * 50) / total_images);
-            progress_clone.set_position(progress_percent as u64);
+            // Only update progress every 10% to reduce output noise, plus important milestones
+            if progress_percent % 10 == 0 || current == total_images || progress_percent >= 80 {
+                progress_clone.set_position(progress_percent as u64);
+            }
         }
     });
 
     image_files.par_iter().for_each(|image_path| {
         let result = process_single_image(image_path, args);
-        sender.send((image_path.clone(), result.is_ok())).unwrap();
+        match &result {
+            Err(e) => {
+                if args.verbose {
+                    eprintln!("Warning: Failed to process image {}: {}. Skipping...", 
+                              image_path.display(), e);
+                }
+                sender.send((image_path.clone(), false)).unwrap();
+            }
+            Ok(_) => {
+                sender.send((image_path.clone(), true)).unwrap();
+            }
+        }
     });
 
     drop(sender);
@@ -679,23 +817,47 @@ fn print_summary(stats: &HashMap<PathBuf, ProcessingStats>) {
     let mut total_compressed = 0u64;
     let mut total_images = 0;
     let mut total_skipped = 0;
-    let mut files_with_no_savings = 0;
+    let mut files_compression_skipped = 0;
+    let mut files_with_errors = 0;
 
     for (path, stat) in stats {
+        if let Some(error_msg) = &stat.error_message {
+            println!(
+                "❌ {}: Failed - {}",
+                path.file_name().unwrap().to_string_lossy(),
+                error_msg
+            );
+            files_with_errors += 1;
+            continue;
+        }
+
+        if stat.compression_skipped {
+            println!(
+                "⏭️  {}: Skipped (already well-compressed, < {:.1}% potential savings)",
+                path.file_name().unwrap().to_string_lossy(),
+                // Calculate what the savings would have been
+                if stat.original_size > 0 {
+                    ((stat.original_size as f64 - stat.compressed_size as f64) / stat.original_size as f64) * 100.0
+                } else { 0.0 }
+            );
+            files_compression_skipped += 1;
+            total_original += stat.original_size;
+            total_compressed += stat.compressed_size; // Same as original for skipped files
+            continue;
+        }
+
         let savings = if stat.original_size > stat.compressed_size {
             ((stat.original_size - stat.compressed_size) as f64 / stat.original_size as f64) * 100.0
         } else {
             0.0
         };
 
-        if savings < 5.0 {
-            files_with_no_savings += 1;
-        }
-
+        let savings_mb = (stat.original_size - stat.compressed_size) as f64 / 1_048_576.0;
         println!(
-            "📖 {}: {:.1}% savings ({} images processed, {} skipped)",
+            "📖 {}: {:.1}% savings ({:.1} MB saved, {} images processed, {} skipped)",
             path.file_name().unwrap().to_string_lossy(),
             savings,
+            savings_mb,
             stat.images_processed,
             stat.images_skipped
         );
@@ -706,6 +868,7 @@ fn print_summary(stats: &HashMap<PathBuf, ProcessingStats>) {
         total_skipped += stat.images_skipped;
     }
 
+    let actually_compressed_files = stats.len() - files_compression_skipped - files_with_errors;
     let overall_savings = if total_original > total_compressed {
         ((total_original - total_compressed) as f64 / total_original as f64) * 100.0
     } else {
@@ -713,23 +876,32 @@ fn print_summary(stats: &HashMap<PathBuf, ProcessingStats>) {
     };
 
     println!("\n🎯 Overall Results:");
-    println!("   Total files processed: {}", stats.len());
+    println!("   Total files found: {}", stats.len());
+    println!("   Files successfully compressed: {}", actually_compressed_files);
+    if files_compression_skipped > 0 {
+        println!("   Files skipped (already well-compressed): {}", files_compression_skipped);
+    }
+    if files_with_errors > 0 {
+        println!("   Files with errors: {}", files_with_errors);
+    }
     println!("   Total images processed: {}", total_images);
     println!("   Total images skipped: {}", total_skipped);
-    println!("   Overall size reduction: {:.1}%", overall_savings);
+    let total_savings_mb = (total_original - total_compressed) as f64 / 1_048_576.0;
+    println!("   Overall size reduction: {:.1}% ({:.1} MB saved)", overall_savings, total_savings_mb);
     println!(
-        "   Original size: {:.2} MB",
+        "   Original size: {:.1} MB",
         total_original as f64 / 1_048_576.0
     );
     println!(
-        "   Compressed size: {:.2} MB",
+        "   Final size: {:.1} MB",
         total_compressed as f64 / 1_048_576.0
     );
 
-    if files_with_no_savings > 0 {
+    if files_compression_skipped > 0 {
         println!(
-            "\n💡 {} file(s) were already well-compressed and showed minimal improvement.",
-            files_with_no_savings
+            "\n💡 {} file(s) were already well-compressed and were left unchanged.",
+            files_compression_skipped
         );
+        println!("   These files likely use efficient compression already (e.g., RAR archives).");
     }
 }

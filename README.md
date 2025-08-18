@@ -9,8 +9,11 @@ A high-performance Rust application for compressing comic book files (CBR/CBZ/PD
 - ✅ **Multiple format support** - Handles CBR (RAR), CBZ (ZIP), and PDF files with automatic format detection
 - ✅ **Advanced PDF support** - Direct image extraction from PDFs (JPEG, PNG, CMYK, Grayscale)
 - ✅ **Automatic folder processing** - Processes all comic files in a directory by default
+- ✅ **Glob pattern support** - Process selective files using patterns (e.g., "ABC*.cbr")
 - ✅ **Progress visualization** - Docker-style layered progress display
 - ✅ **Smart compression** - Skips images that don't benefit from compression
+- ✅ **Intelligent file preservation** - Keeps already well-compressed files unchanged (especially RAR archives)
+- ✅ **Robust error handling** - Continues processing even with corrupt images
 - ✅ **CBR output format** - Always outputs .cbr files regardless of input format
 - ✅ **Standalone binary** - No external dependencies required
 
@@ -71,6 +74,26 @@ compress_comics
 compress_comics /path/to/comics/
 ```
 
+### Process files using glob patterns
+```bash
+# Simple patterns (automatically searches recursively)
+compress_comics --glob-pattern "ABC*.cbr"        # Files starting with "ABC" anywhere
+compress_comics --glob-pattern "*Killer*.cbr"    # Files containing "Killer" anywhere
+
+# Explicit recursive patterns
+compress_comics --glob-pattern "**/De Killer*.cbr"  # Recursive search for "De Killer"
+compress_comics --glob-pattern "**/*Volume*/*.cbz"  # Complex nested patterns
+
+# Absolute path patterns
+compress_comics --glob-pattern "/full/path/**/Killer*.cbr"  # Full path search
+
+# Current directory only
+compress_comics --glob-pattern "*.pdf"              # PDF files in current directory
+
+# Debug your patterns
+compress_comics --glob-pattern "pattern" --verbose  # Shows found files before processing
+```
+
 ### Custom settings
 ```bash
 compress_comics comics/ --quality 75 --target-height 1600
@@ -80,6 +103,12 @@ compress_comics comics/ --quality 75 --target-height 1600
 ```bash
 compress_comics comics/ --rename-original --quality 85
 # Result: Original files become *_original.ext, compressed files get clean names
+```
+
+### Skip already well-compressed files
+```bash
+compress_comics comics/ --min-savings 10.0  # Only compress if >10% savings possible
+# Files with less potential savings are left unchanged (especially useful for RAR archives)
 ```
 
 ## Options
@@ -92,6 +121,41 @@ compress_comics comics/ --rename-original --quality 85
 - `--target-height` / `-H`: Target height for images in pixels (default: 1800)
 - `--max-dimension` / `-m`: Maximum dimension fallback (default: 1200)
 - `--rename-original` / `-r`: Rename original file to `<name>_original.<ext>` and give compressed file the original name
+- `--glob-pattern` / `-g`: Process only files matching the glob pattern (e.g., "ABC*.cbr", "*.pdf")
+- `--min-savings`: Minimum compression savings percentage required to keep compressed file (default: 5.0)
+- `--verbose` / `-v`: Enable detailed output with warnings for debugging (disabled by default for clean output)
+
+## Glob Pattern Tips
+
+Glob patterns use wildcards to match file paths:
+- `*` matches any characters within a directory name
+- `**` matches any number of directories (recursive)
+- `?` matches a single character
+- `[abc]` matches any character in brackets
+
+### Common Scenarios
+
+**Find files by series name anywhere in directory tree:**
+```bash
+compress_comics --glob-pattern "**/De Killer*.cbr"
+```
+
+**Find files in specific nested structure:**
+```bash
+compress_comics --glob-pattern "**/Striparchief*/**/De Killer*.cbr"
+```
+
+**Find files with specific volume numbers:**
+```bash
+compress_comics --glob-pattern "**/*Volume 1*.cbr"
+compress_comics --glob-pattern "**/*S0[1-3]*.cbr"  # Seasons 1-3
+```
+
+**Use verbose mode to debug patterns:**
+```bash
+compress_comics --glob-pattern "**/Killer*.cbr" --verbose
+```
+This shows exactly which files were found before processing.
 
 ## Output
 
@@ -163,17 +227,19 @@ After processing, the tool provides a detailed summary:
 
 ### CBR/CBZ Files
 ```
-📖 Amber Blake - 01.cbr: 61.1% savings (104 images processed, 0 skipped)
-📖 Auschwitz - 01.cbr: 67.9% savings (84 images processed, 0 skipped)
+📖 Amber Blake - 01.cbr: 61.1% savings (77.9 MB saved, 104 images processed, 0 skipped)
+📖 Auschwitz - 01.cbr: 67.9% savings (74.9 MB saved, 84 images processed, 0 skipped)
 
-Original: 237.83 MB → Compressed: 85.05 MB (64.3% total savings)
+Overall size reduction: 64.3% (152.8 MB saved)
+Original size: 237.8 MB → Final size: 85.0 MB
 ```
 
 ### PDF Files
 ```
-📖 Brocéliande - Tome 67.pdf: 76.3% savings (55 images processed, 0 skipped)
+📖 Brocéliande - Tome 67.pdf: 76.3% savings (91.1 MB saved, 55 images processed, 0 skipped)
 
-Original: 119.41 MB → Compressed: 28.29 MB (76.3% savings)
+Overall size reduction: 76.3% (91.1 MB saved)
+Original size: 119.4 MB → Final size: 28.3 MB
 ```
 
 ### With `--rename-original` Option
