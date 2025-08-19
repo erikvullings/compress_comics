@@ -383,6 +383,11 @@ fn extract_zip_archive(archive_path: &Path, temp_dir: &Path) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
 
+        // Skip directories - they are created by create_dir_all above
+        if file.name().ends_with('/') {
+            continue;
+        }
+
         let mut output_file = File::create(&file_path)?;
         std::io::copy(&mut file, &mut output_file)?;
     }
