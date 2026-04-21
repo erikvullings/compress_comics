@@ -142,7 +142,7 @@ fn main() -> Result<()> {
     comic_files.par_iter().for_each(|comic_file| {
         let file_progress = multi_progress.add(ProgressBar::new(100));
         let style_result = ProgressStyle::default_bar()
-            .template("  {msg} [{elapsed_precise}] [{bar:30.green/yellow}] {pos}/{len} images")
+            .template("  {msg} [{elapsed_precise}] [{bar:30.green/yellow}] {percent}%")
             .unwrap()
             .progress_chars("█▉▊▋▌▍▎▏ ");
         file_progress.set_style(style_result);
