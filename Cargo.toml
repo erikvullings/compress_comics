@@ -3,7 +3,7 @@ name = "compress_comics"
 version = "1.1.1"
 edition = "2021"
 authors = ["Erik Vullings <erik.vullings@gmail.com>"]
-description = "High-performance comic book compression tool with WebP conversion supporting CBR, CBZ, and PDF formats"
+description = "High-performance comic book compression tool with WebP conversion supporting CBR, CBZ, PDF, and EPUB formats"
 license = "MIT"
 repository = "https://github.com/erikvullings/compress_comics"
 homepage = "https://github.com/erikvullings/compress_comics"
@@ -13,26 +13,27 @@ categories = ["command-line-utilities", "multimedia::images"]
 readme = "README.md"
 
 [dependencies]
-rayon = "1.10"
-image = { version = "0.25", default-features = false, features = [
+rayon = "1.12.0"
+image = { version = "0.25.10", default-features = false, features = [
     "png",
     "jpeg",
 ] }
-webp = "0.3"
-jpeg2k = "0.9"
-zip = "4.3"
-unrar = "0.5"
-walkdir = "2.5"
-clap = { version = "4.5", features = ["derive"] }
-indicatif = "0.18"
-anyhow = "1.0"
-tempfile = "3.20"
-crossbeam-channel = "0.5"
-lopdf = "0.32"
+webp = "0.3.1"
+jpeg2k = "0.10.1"
+zip = "8.5.1"
+unrar = "0.5.8"
+walkdir = "2.5.0"
+clap = { version = "4.6.1", features = ["derive"] }
+indicatif = "0.18.4"
+anyhow = "1.0.102"
+tempfile = "3.27.0"
+crossbeam-channel = "0.5.15"
+lopdf = "0.40.0"
 moxcms = "0.8"
-flate2 = "1.0"
-glob = "0.3"
+flate2 = "1.1.9"
+glob = "0.3.3"
 hayro-jbig2 = { version = "0.3", default-features = false, features = ["std", "simd"] }
+epub = "2.1.5"
 
 [profile.release]
 lto = true

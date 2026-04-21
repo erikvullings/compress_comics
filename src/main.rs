@@ -15,7 +15,7 @@ use walkdir::WalkDir;
 use zip::{write::FileOptions, ZipWriter};
 
 #[derive(Parser)]
-#[command(author, version, about = "Compress comic book files (CBR/CBZ/PDF) with parallel processing", long_about = None)]
+#[command(author, version, about = "Compress comic book files (CBR/CBZ/PDF/EPUB) with parallel processing", long_about = None)]
 struct Args {
     /// Input file or directory to process. If directory, processes all comic files
     #[arg(value_name = "INPUT")]
@@ -65,6 +65,7 @@ enum ComicType {
     Cbz,
     Cbr,
     Pdf,
+    Epub,
 }
 
 #[derive(Debug)]
@@ -207,7 +208,8 @@ fn detect_comic_file(path: &Path) -> Result<ComicFile> {
         Some("cbz") => ComicType::Cbz,
         Some("cbr") => ComicType::Cbr,
         Some("pdf") => ComicType::Pdf,
-        _ => anyhow::bail!("Unsupported file type. Only CBR, CBZ, and PDF files are supported."),
+        Some("epub") => ComicType::Epub,
+        _ => anyhow::bail!("Unsupported file type. Only CBR, CBZ, PDF, and EPUB files are supported."),
     };
 
     Ok(ComicFile {
@@ -284,15 +286,14 @@ fn process_comic_file(
 ) -> Result<ProcessingStats> {
     let original_size = fs::metadata(&comic_file.path)?.len();
 
-    let temp_dir = std::env::temp_dir().join("compress_comics_debug");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir)?;
+    let temp_dir = tempfile::tempdir()
+        .context("Failed to create temporary directory")?;
     progress.set_position(10);
 
-    extract_comic(&comic_file, temp_dir.as_path(), progress).with_context(|| "extract_comic failed")?;
+    extract_comic(&comic_file, temp_dir.path(), progress).with_context(|| "extract_comic failed")?;
     progress.set_position(30);
 
-    let image_files = find_image_files(temp_dir.as_path())?;
+    let image_files = find_image_files(temp_dir.path())?;
 
     let stats = process_images(&image_files, args, progress).with_context(|| "process_images failed")?;
     progress.set_position(80);
@@ -306,7 +307,7 @@ fn process_comic_file(
         generate_output_path(&comic_file.path, args.quality, false)
     };
 
-    create_cbr_archive(temp_dir.as_path(), &temp_output_path, progress).with_context(|| "create_cbr_archive failed")?;
+    create_cbr_archive(temp_dir.path(), &temp_output_path, progress).with_context(|| "create_cbr_archive failed")?;
     progress.set_position(90);
 
     let compressed_size = fs::metadata(&temp_output_path)?.len();
@@ -407,7 +408,221 @@ fn extract_comic(comic_file: &ComicFile, temp_dir: &Path, _progress: &ProgressBa
         ComicType::Pdf => {
             extract_pdf_archive(&comic_file.path, temp_dir)?;
         }
+        ComicType::Epub => {
+            extract_epub_archive(&comic_file.path, temp_dir)?;
+        }
     }
+    Ok(())
+}
+
+fn extract_epub_archive(epub_path: &Path, temp_dir: &Path) -> Result<()> {
+    let mime_to_ext = |mime: &str| -> &str {
+        match mime {
+            "image/jpeg" => "jpg",
+            "image/png" => "png",
+            "image/gif" => "gif",
+            "image/bmp" => "bmp",
+            "image/webp" => "webp",
+            "image/tiff" | "image/tif" => "tiff",
+            _ => "",
+        }
+    };
+
+    // Extract src attributes from XHTML/HTML content.
+    fn extract_src_attrs(content: &str) -> Vec<String> {
+        let mut results = Vec::new();
+        let lower = content.to_lowercase();
+        let mut search_start = 0;
+        while let Some(pos) = lower[search_start..].find("src=") {
+            let pos = search_start + pos;
+            let rest = &content[pos + 4..];
+            let Some(quote) = rest.chars().next() else { break };
+            let quote_end = if quote == '"' { '"' } else { '\'' };
+            if let Some(end) = rest[1..].find(quote_end) {
+                results.push(rest[1..][..end].to_string());
+                search_start = pos + 4 + 1 + end;
+            } else {
+                break;
+            }
+        }
+        results
+    }
+
+    let mut doc = epub::doc::EpubDoc::new(epub_path)
+        .map_err(|e| anyhow::anyhow!("Failed to parse EPUB file: {:?}. Ensure it's a valid EPUB.", e))?;
+
+    #[derive(Clone)]
+    struct ImageRef {
+        path: std::path::PathBuf,
+        ext: String,
+    }
+
+    #[derive(Clone)]
+    struct SpineEntry {
+        idref: String,
+        is_image: bool,
+        image_path: Option<std::path::PathBuf>,
+        image_ext: Option<String>,
+        xhtml_content: Option<String>,
+    }
+
+    /// Try to find a resource by resolving a src reference against the spine
+    /// item's resource path.
+    fn find_resource<'a>(
+        src: &str,
+        spine_resource_path: &std::path::PathBuf,
+        resources: &'a std::collections::HashMap<String, epub::doc::ResourceItem>,
+    ) -> Option<&'a epub::doc::ResourceItem> {
+        // Try exact path match first
+        if let Some(r) = resources.get(src) {
+            return Some(r);
+        }
+        // Try resolving relative to spine resource directory
+        let base_dir = spine_resource_path.parent().map(|p| p.to_string_lossy().to_string());
+        if let Some(dir) = base_dir {
+            let resolved = if src.starts_with('/') {
+                src[1..].to_string()
+            } else {
+                format!("{}/{}", dir, src)
+            };
+            if let Some(r) = resources.get(&resolved) {
+                return Some(r);
+            }
+        }
+        // Fallback: match by basename only
+        if let Some(basename) = std::path::Path::new(src).file_name() {
+            for (_id, r) in resources {
+                if r.path.file_name().map(|n| n == basename).unwrap_or(false) {
+                    return Some(r);
+                }
+            }
+        }
+        None
+    }
+
+    // Phase 1a: Collect spine IDs and image info (immutable phase)
+    let mut spine_image_info = Vec::new();
+    for item in &doc.spine {
+        let idref = &item.idref;
+        let is_image;
+        let (image_path, image_ext) = if let Some(resource) = doc.resources.get(idref) {
+            let ext = mime_to_ext(&resource.mime);
+            if !ext.is_empty() {
+                is_image = true;
+                (Some(resource.path.clone()), Some(ext.to_string()))
+            } else {
+                is_image = false;
+                (None, None)
+            }
+        } else {
+            is_image = false;
+            (None, None)
+        };
+        spine_image_info.push((idref.clone(), is_image, image_path, image_ext));
+    }
+    // End immutable phase — `doc.spine` and `doc.resources` borrows released
+
+    // Phase 1b: Fetch XHTML content for non-image spine items
+    let entries: Vec<SpineEntry> = spine_image_info.into_iter().map(|(idref, is_image, image_path, image_ext)| {
+        let xhtml_content = if is_image {
+            None
+        } else {
+            doc.get_resource_str(&idref)
+                .filter(|(_, mime)| mime.contains("html") || mime.contains("xml"))
+                .map(|(content, _)| content)
+        };
+        SpineEntry {
+            idref,
+            is_image,
+            image_path,
+            image_ext,
+            xhtml_content,
+        }
+    }).collect();
+
+    // Phase 2: Collect images in reading order (doc is no longer borrowed immutably)
+    let mut seen = std::collections::HashSet::new();
+    let mut images: Vec<ImageRef> = Vec::new();
+
+    for entry in &entries {
+        if entry.is_image {
+            if let (Some(path), Some(ext)) = (&entry.image_path, &entry.image_ext) {
+                if seen.insert(path.clone()) {
+                    images.push(ImageRef {
+                        path: path.clone(),
+                        ext: ext.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+
+        // Parse XHTML content for <img src="..."> refs
+        if let Some(ref content) = entry.xhtml_content {
+            let srcs = extract_src_attrs(content);
+            let spine_res_path = doc.resources
+                .get(&entry.idref)
+                .map(|r| r.path.clone());
+            for src in srcs {
+                let resolved_resource = spine_res_path
+                    .as_ref()
+                    .and_then(|p| find_resource(&src, p, &doc.resources))
+                    .or_else(|| find_resource(&src, &std::path::PathBuf::new(), &doc.resources));
+                if let Some(r) = resolved_resource {
+                    let ext = mime_to_ext(&r.mime);
+                    if !ext.is_empty() && seen.insert(r.path.clone()) {
+                        images.push(ImageRef {
+                            path: r.path.clone(),
+                            ext: ext.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: no spine images — use all image resources from the manifest
+    if images.is_empty() {
+        let mut all: Vec<ImageRef> = doc.resources.iter()
+            .filter_map(|(_id, resource)| {
+                let ext = mime_to_ext(&resource.mime);
+                if !ext.is_empty() {
+                    Some(ImageRef {
+                        path: resource.path.clone(),
+                        ext: ext.to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Sort by path for deterministic ordering
+        all.sort_by(|a, b| a.path.cmp(&b.path));
+        for img in all {
+            if seen.insert(img.path.clone()) {
+                images.push(img);
+            }
+        }
+    }
+
+    // Now extract images in order
+    let mut image_count = 0u32;
+    for img in &images {
+        image_count += 1;
+        let out_name = format!("page_{:04}.{}", image_count, img.ext);
+        let out_path = temp_dir.join(&out_name);
+
+        if let Some(parent) = img.path.parent() {
+            let dir_path = temp_dir.join(parent);
+            fs::create_dir_all(&dir_path)?;
+        }
+
+        if let Some(data) = doc.get_resource_by_path(&img.path) {
+            fs::write(&out_path, data)
+                .map_err(|e| anyhow::anyhow!("Failed to write EPUB image {}: {:?}", out_name, e))?;
+        }
+    }
+
     Ok(())
 }
 
