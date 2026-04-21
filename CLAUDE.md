@@ -16,7 +16,7 @@ cargo check               # Fast compile check without building
 
 ### Testing
 ```bash
-cargo test                # Run all tests (if any exist)
+cargo test                # Run tests (no tests currently exist)
 ```
 
 ### Running
@@ -71,9 +71,12 @@ This is a single-file Rust application (`src/main.rs`) structured as follows:
 - **unrar** - RAR archive extraction for true CBR files
 - **lopdf** - PDF parsing and embedded image extraction
 - **glob** - Pattern matching for file selection
+- **walkdir** - Recursive directory traversal for finding comic files
 - **indicatif** - Progress bars with Docker-style multi-file display
-- **clap** - Command-line argument parsing
+- **clap** - Command-line argument parsing (derive API)
 - **tempfile** - Secure temporary directory management
+- **anyhow** - Error handling with context chaining
+- **crossbeam-channel** - Multi-producer multi-consumer channels for parallel processing
 
 ### Processing Flow
 
@@ -101,4 +104,11 @@ This is a single-file Rust application (`src/main.rs`) structured as follows:
 - Parallel image processing within each file
 - Work-stealing thread pool for load balancing
 - Temporary directory cleanup
-- Release profile with LTO and single codegen unit
+- Release profile: LTO, single codegen unit, panic=abort, binary stripping (~20-30% size reduction)
+- Minimal image crate features (png, jpeg only) to reduce build time and binary size
+
+## Installation
+
+```bash
+cargo install compress_comics   # Install from crates.io
+```
