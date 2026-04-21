@@ -19,6 +19,7 @@ image = { version = "0.25", default-features = false, features = [
     "jpeg",
 ] }
 webp = "0.3"
+jpeg2k = "0.9"
 zip = "4.3"
 unrar = "0.5"
 walkdir = "2.5"
@@ -28,8 +29,10 @@ anyhow = "1.0"
 tempfile = "3.20"
 crossbeam-channel = "0.5"
 lopdf = "0.32"
+moxcms = "0.8"
 flate2 = "1.0"
 glob = "0.3"
+hayro-jbig2 = { version = "0.3", default-features = false, features = ["std", "simd"] }
 
 [profile.release]
 lto = true
